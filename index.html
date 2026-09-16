@@ -1,0 +1,333 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pixel Frame — remote</title><style>
+:root{--bg:#22262e;--card:#2b3039;--ink:#f2ede4;--muted:#9aa0aa;--amber:#f0a830;--red:#e0583e;--green:#5fbf7a;--line:#3a414c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 -apple-system,"Segoe UI",Roboto,Arial,sans-serif;padding:16px 12px 56px}
+main{max-width:640px;margin:0 auto}
+h1{font-size:22px;font-weight:600;margin:0}
+h2{font-size:15px;font-weight:600;color:var(--muted);margin:0 0 10px;text-transform:uppercase;letter-spacing:.6px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;margin-bottom:14px}
+#status{color:var(--muted);font-size:13px;flex:1 1 100%}
+#status b{color:var(--ink);font-weight:500}
+section{background:var(--card);border-radius:12px;padding:14px;margin-top:14px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.row>input[type=text],.row>input[type=password]{flex:1;min-width:140px}
+button{font:inherit;border:0;border-radius:9px;padding:12px 16px;background:var(--amber);color:#1a1408;font-weight:600;cursor:pointer;min-height:44px}
+button.quiet{background:#3a414c;color:var(--ink);font-weight:500}
+button.small{padding:6px 10px;min-height:32px;font-size:13px}
+button:disabled{opacity:.5;cursor:default}
+input[type=text],input[type=password],input[type=number]{font:inherit;padding:11px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--ink);min-height:44px;width:100%}
+input[type=color]{width:44px;height:44px;padding:2px;border:0;background:none}
+input[type=range]{width:100%;accent-color:var(--amber);height:32px}
+input[type=file]{display:none}
+label{font-size:14px;color:var(--muted)}
+.set{display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center;margin-bottom:12px}
+.set input[type=range]{grid-column:1/-1}
+.saved{color:var(--green);font-size:13px;min-width:50px;text-align:right}
+.form{display:grid;grid-template-columns:1fr;gap:8px}
+.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin:10px 0 6px}
+.bar i{display:block;height:100%;width:0;background:var(--amber);transition:width .2s}
+.note{color:var(--muted);font-size:14px;margin:8px 0 0}
+#log{font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;max-height:220px;overflow:auto;white-space:pre-wrap;margin:0}
+#log .bad{color:#ff8c78}#log .good{color:var(--green)}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--red);margin-right:6px;vertical-align:middle}
+.dot.on{background:var(--green)}
+</style></head><body><main>
+<header><h1>Pixel Frame <span style="color:var(--muted);font-weight:400">remote</span></h1><p id="status"><span class="dot" id="dot"></span>not connected</p></header>
+
+<section id="setup">
+<h2>Broker</h2>
+<div class="form">
+<input type="text" id="host" placeholder="Cluster URL, e.g. a1b2c3d4e5.s1.eu.hivemq.cloud" autocapitalize="off" autocomplete="off">
+<input type="text" id="user" placeholder="Username" autocapitalize="off" autocomplete="username">
+<input type="password" id="pass" placeholder="Password" autocomplete="current-password">
+<input type="text" id="fid" placeholder="Frame id (MQTT_FRAME_ID in the firmware)" value="frame1" autocapitalize="off">
+<div class="row"><button id="connect">Connect</button><button class="quiet" id="forget">Forget</button></div>
+</div>
+<p class="note">Saved in this browser only. This page never contains your password.</p>
+</section>
+
+<section>
+<h2>Send a message</h2>
+<div class="row"><input type="text" id="t" maxlength="120" placeholder="Happy birthday!"><input type="color" id="c" value="#f0a830"><button class="quiet" id="send">Scroll it</button></div>
+</section>
+
+<section>
+<h2>Add photos or GIFs</h2>
+<div class="row"><button id="pick">Choose files</button><span class="note" id="upmsg" style="margin:0">Resized to 64&times;64 here before sending.</span></div>
+<input type="file" id="f" accept="image/*" multiple>
+<div class="bar"><i id="upbar"></i></div>
+</section>
+
+<section>
+<h2>Frame</h2>
+<div class="set"><label>Brightness <b id="bv">60</b>%</label><span class="saved" id="bs"></span><input type="range" id="b" min="5" max="100" value="60"></div>
+<div class="set"><label>Slideshow: each item stays for <b id="iv">20</b> s</label><span class="saved" id="is"></span><input type="range" id="i" min="2" max="300" value="20"></div>
+<div class="row"><button class="quiet" id="resume">Back to slideshow</button></div>
+</section>
+
+<section>
+<h2>Activity</h2>
+<pre id="log"></pre>
+<div class="row" style="margin-top:10px"><button class="quiet small" id="clearlog">Clear</button></div>
+</section>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let MAXF=24, client=null, base='', waiters=[];
+
+function note(t,cls){const e=$('log');const d=document.createElement('div');if(cls)d.className=cls;
+  d.textContent=new Date().toLocaleTimeString()+'  '+t;e.append(d);while(e.children.length>80)e.firstChild.remove();e.scrollTop=e.scrollHeight;}
+function setStatus(html,on){$('status').innerHTML='<span class="dot'+(on?' on':'')+'" id="dot"></span>'+html;}
+
+// ---- settings kept in this browser ----
+const KEYS=['host','user','pass','fid'];
+function loadCfg(){try{for(const k of KEYS){const v=localStorage.getItem('pf_'+k);if(v!==null)$(k).value=v;}}catch(e){}}
+function saveCfg(){try{for(const k of KEYS)localStorage.setItem('pf_'+k,$(k).value.trim());}catch(e){}}
+$('forget').onclick=()=>{try{for(const k of KEYS)localStorage.removeItem('pf_'+k);}catch(e){}for(const k of KEYS)$(k).value=k==='fid'?'frame1':'';if(client){client.end(true);client=null;}setStatus('not connected',false);};
+
+// ---- MQTT ----
+function connect(){
+  saveCfg();
+  const host=$('host').value.trim(), user=$('user').value.trim(), pass=$('pass').value, fid=$('fid').value.trim()||'frame1';
+  if(!host||!user||!pass){note('Fill in the broker URL, username and password first.','bad');return;}
+  // A full ws:// or wss:// URL is used as given; a bare hostname means HiveMQ Cloud's WebSocket port.
+  const url=/^wss?:\/\//.test(host)?host:'wss://'+host+':8884/mqtt';
+  base='pixelframe/'+fid+'/';
+  if(client){client.end(true);client=null;}
+  setStatus('connecting to '+host+'\u2026',false);
+  client=mqtt.connect(url,{username:user,password:pass,clean:true,connectTimeout:10000,reconnectPeriod:5000,keepalive:30});
+  client.on('connect',()=>{
+    note('Connected to broker.','good');setStatus('broker connected, waiting for the frame\u2026',false);
+    client.subscribe([base+'status',base+'ack'],{qos:1},err=>{if(err)note('Subscribe failed: '+err.message,'bad');});
+  });
+  client.on('message',(topic,payload)=>{
+    let m;try{m=JSON.parse(payload.toString());}catch(e){return;}
+    if(topic===base+'status')onStatus(m);
+    else if(topic===base+'ack'){
+      for(const w of [...waiters]) if(w.pred(m)){waiters.splice(waiters.indexOf(w),1);w.resolve(m);}
+      if(m.ok===false)note('Frame reports: '+(m.cmd||'')+' \u2014 '+m.err,'bad');
+    }
+  });
+  client.on('error',e=>{note('Broker: '+(e.message||e),'bad');setStatus('broker error \u2014 check URL, username and password',false);});
+  client.on('offline',()=>setStatus('offline, reconnecting\u2026',false));
+  client.on('close',()=>{if(client)setStatus('disconnected, reconnecting\u2026',false);});
+}
+function onStatus(s){
+  if(!s.online){setStatus('broker connected \u2014 <b>frame is offline</b>',false);return;}
+  setStatus('<b>frame online</b> \u00b7 '+s.storage+' \u00b7 '+s.freeMB+' MB free \u00b7 '+s.count+' items \u00b7 GIFs up to '+s.maxframes+' frames'+(s.pinned?' \u00b7 holding '+s.pinned:''),true);
+  MAXF=s.maxframes||MAXF;
+  if(document.activeElement!==$('b')){$('b').value=s.brightness;$('bv').textContent=s.brightness;}
+  if(document.activeElement!==$('i')){$('i').value=s.interval;$('iv').textContent=s.interval;}
+  if(s.lastError)note('Frame reports: '+s.lastError,'bad');
+}
+function publish(sub,payload){
+  return new Promise((res,rej)=>{
+    if(!client||!client.connected)return rej(new Error('not connected to the broker'));
+    client.publish(base+'cmd/'+sub,payload,{qos:1},err=>err?rej(err):res());
+  });
+}
+// Publish, then wait for the frame's ack. Retries on silence: every command is
+// safe to repeat (frames are numbered, so a duplicate is just acknowledged again).
+async function command(sub,payload,pred,tries=3,timeoutMs=5000){
+  let last='no reply from the frame';
+  for(let a=1;a<=tries;a++){
+    const p=new Promise((resolve)=>{const w={pred,resolve};waiters.push(w);setTimeout(()=>{const k=waiters.indexOf(w);if(k>=0){waiters.splice(k,1);resolve(null);}},timeoutMs);});
+    try{await publish(sub,payload);}catch(e){last=e.message;await new Promise(r=>setTimeout(r,1000));continue;}
+    const m=await p;
+    if(m&&m.ok)return m;
+    if(m&&!m.ok)throw new Error(m.err||'frame refused '+sub);
+    note('No reply for '+sub+', retrying ('+a+'/'+tries+')');
+  }
+  throw new Error(last+' (is the frame online?)');
+}
+
+// ---- image conversion, identical to the local page ----
+function toRGB565(ctx){
+  const d=ctx.getImageData(0,0,64,64).data,out=new Uint8Array(8192);
+  for(let i=0;i<4096;i++){const v=((d[i*4]>>3)<<11)|((d[i*4+1]>>2)<<5)|(d[i*4+2]>>3);out[i*2]=v&255;out[i*2+1]=v>>8;}
+  let s='';for(let i=0;i<8192;i+=4096)s+=String.fromCharCode.apply(null,out.subarray(i,i+4096));
+  return btoa(s);
+}
+function squareDraw(ctx,src,w,h){const s=Math.min(w,h);ctx.clearRect(0,0,64,64);ctx.drawImage(src,(w-s)/2,(h-s)/2,s,s,0,0,64,64);}
+
+
+// ---- Minimal GIF decoder (works in every browser; used when ImageDecoder is missing) ----
+function gifLzw(data,minCode,npix){
+  const out=new Uint8Array(npix);
+  const clear=1<<minCode, eoi=clear+1;
+  const prefix=new Int32Array(4096), suffix=new Uint8Array(4096), stack=new Uint8Array(4097);
+  for(let i=0;i<clear;i++){prefix[i]=-1;suffix[i]=i;}
+  let codeSize=minCode+1, next=eoi+1, prev=-1, bits=0, acc=0, pos=0, o=0;
+  while(o<npix){
+    while(bits<codeSize){ if(pos>=data.length) return out; acc|=data[pos++]<<bits; bits+=8; }
+    const code=acc&((1<<codeSize)-1); acc>>>=codeSize; bits-=codeSize;
+    if(code===clear){ codeSize=minCode+1; next=eoi+1; prev=-1; continue; }
+    if(code===eoi) break;
+    let sp=0, first, extra=false;
+    if(code<next){ let c=code; while(c>=0){ stack[sp++]=suffix[c]; c=prefix[c]; } }
+    else if(code===next && prev>=0){ let c=prev; while(c>=0){ stack[sp++]=suffix[c]; c=prefix[c]; } extra=true; }
+    else return out; // corrupt stream
+    first=stack[sp-1];
+    for(let i=sp-1;i>=0&&o<npix;i--) out[o++]=stack[i];
+    if(extra && o<npix) out[o++]=first;
+    if(prev>=0 && next<4096){
+      prefix[next]=prev; suffix[next]=first; next++;
+      if(next===(1<<codeSize) && codeSize<12) codeSize++;
+    }
+    prev=code;
+  }
+  return out;
+}
+// Walks every frame in order. cb(index, delayMs, rgbaOrNull, W, H). If decodePixels is
+// false only the structure is read (fast) - used to count frames and total duration.
+function gifWalk(buf,decodePixels,cb){
+  const b=new Uint8Array(buf); let p=0;
+  const u16=()=>{const v=b[p]|(b[p+1]<<8); p+=2; return v;};
+  if(b.length<13||b[0]!==71||b[1]!==73||b[2]!==70) throw new Error('not a GIF file');
+  p=6; const W=u16(), H=u16(); const gf=b[p++]; p+=2;
+  let gct=null; if(gf&0x80){ const n=2<<(gf&7); gct=b.subarray(p,p+n*3); p+=n*3; }
+  const sub=()=>{ const parts=[]; let t=0; while(p<b.length){ const n=b[p++]; if(!n)break; parts.push(b.subarray(p,p+n)); t+=n; p+=n; } const o=new Uint8Array(t); let k=0; for(const q of parts){ o.set(q,k); k+=q.length; } return o; };
+  const skipSub=()=>{ while(p<b.length){ const n=b[p++]; if(!n)break; p+=n; } };
+  let canvas=decodePixels?new Uint8ClampedArray(W*H*4):null, saved=null;
+  let delay=100, disposal=0, transp=-1, i=0;
+  while(p<b.length){
+    const c=b[p++];
+    if(c===0x3B) break;
+    if(c===0x21){
+      const label=b[p++];
+      if(label===0xF9){ const d=sub(); const f=d[0]; disposal=(f>>2)&7; const t=d[1]|(d[2]<<8); delay=t<=1?100:t*10; transp=(f&1)?d[3]:-1; }
+      else skipSub();
+      continue;
+    }
+    if(c!==0x2C) throw new Error('unexpected block 0x'+c.toString(16)+' at byte '+(p-1));
+    const x=u16(), y=u16(), w=u16(), h=u16(); const fl=b[p++];
+    let ct=gct; if(fl&0x80){ const n=2<<(fl&7); ct=b.subarray(p,p+n*3); p+=n*3; }
+    const minCode=b[p++];
+    if(!decodePixels){ skipSub(); cb(i++,delay,null,W,H); disposal=0; transp=-1; continue; }
+    const pix=gifLzw(sub(),minCode,w*h);
+    if(disposal===3) saved=canvas.slice();
+    const rows=[];
+    if(fl&0x40){ for(const [s,st] of [[0,8],[4,8],[2,4],[1,2]]) for(let r=s;r<h;r+=st) rows.push(r); }
+    else for(let r=0;r<h;r++) rows.push(r);
+    if(ct) for(let r=0;r<h;r++){
+      const ty=y+rows[r]; if(ty>=H) continue;
+      for(let cx=0;cx<w;cx++){
+        const tx=x+cx; if(tx>=W) continue;
+        const ci=pix[r*w+cx]; if(ci===transp) continue;
+        const o=(ty*W+tx)*4; canvas[o]=ct[ci*3]; canvas[o+1]=ct[ci*3+1]; canvas[o+2]=ct[ci*3+2]; canvas[o+3]=255;
+      }
+    }
+    cb(i++,delay,canvas,W,H);
+    if(disposal===2){
+      for(let r=0;r<h;r++){ const ty=y+r; if(ty>=H) break;
+        for(let cx=0;cx<w;cx++){ const tx=x+cx; if(tx>=W) break; const o=(ty*W+tx)*4; canvas[o]=canvas[o+1]=canvas[o+2]=canvas[o+3]=0; } }
+    } else if(disposal===3&&saved){ canvas=saved; saved=null; }
+    disposal=0; transp=-1;
+  }
+  return {W,H,count:i};
+}
+
+// Picks up to MAXF evenly spaced frames and returns {frames:[base64...], delay}.
+function pickIndices(total,maxf){const keep=Math.min(total,maxf),s=new Set();for(let k=0;k<keep;k++)s.add(Math.floor(k*total/keep));return s;}
+
+async function gifFramesNative(buf,prog,total,dur){
+  const dec=new ImageDecoder({data:buf,type:'image/gif'});
+  try{
+    await dec.tracks.ready;await dec.completed;
+    const n=Math.min(total,dec.tracks.selectedTrack.frameCount||total);
+    if(!n)throw new Error('decoder found no frames');
+    const want=[...pickIndices(n,MAXF)];
+    const cv=document.createElement('canvas');cv.width=64;cv.height=64;const ctx=cv.getContext('2d');
+    const frames=[];
+    for(let k=0;k<want.length;k++){
+      const r=await dec.decode({frameIndex:want[k]});
+      squareDraw(ctx,r.image,r.image.displayWidth,r.image.displayHeight);r.image.close();
+      frames.push(toRGB565(ctx));prog('decoding frame '+(k+1)+' of '+want.length);
+    }
+    return {frames,delay:dur/want.length,total};
+  }finally{dec.close();}
+}
+async function gifFramesJS(buf,prog,total,dur){
+  const want=pickIndices(total,MAXF);
+  const cv=document.createElement('canvas');cv.width=64;cv.height=64;const ctx=cv.getContext('2d');
+  let full=null,fctx=null,imd=null;const frames=[];
+  gifWalk(buf,true,(i,d,rgba,W,H)=>{
+    if(!want.has(i))return;
+    if(!full){full=document.createElement('canvas');full.width=W;full.height=H;fctx=full.getContext('2d');imd=fctx.createImageData(W,H);}
+    imd.data.set(rgba);fctx.putImageData(imd,0,0);
+    squareDraw(ctx,full,W,H);frames.push(toRGB565(ctx));
+    prog('decoding frame '+frames.length+' of '+want.size);
+  });
+  return {frames,delay:dur/want.size,total};
+}
+
+
+
+async function sendPhoto(file,prog){
+  const bmp=await createImageBitmap(file);
+  const cv=document.createElement('canvas');cv.width=64;cv.height=64;const ctx=cv.getContext('2d');
+  squareDraw(ctx,bmp,bmp.width,bmp.height);bmp.close();
+  prog('sending');
+  const r=await command('photo',toRGB565(ctx),m=>m.cmd==='photo');
+  return r.name;
+}
+async function sendGif(file,prog){
+  const buf=await file.arrayBuffer();
+  let total=0,dur=0;gifWalk(buf,false,(i,d)=>{total++;dur+=d;});
+  if(!total)throw new Error('no frames found in this GIF');
+  let g;
+  if(typeof ImageDecoder!=='undefined'){try{g=await gifFramesNative(buf,prog,total,dur);}catch(e){note('Browser decoder failed ('+e.message+'), using built-in decoder.');}}
+  if(!g)g=await gifFramesJS(buf,prog,total,dur);
+  const delay=Math.min(Math.max(Math.round(g.delay),40),1000);
+  const s=await command('gifstart','1',m=>m.cmd==='gifstart');
+  const cap=s.max||MAXF;
+  let have=0;
+  while(have<g.frames.length&&have<cap){
+    const i=have;
+    prog('sending frame '+(i+1)+' of '+g.frames.length);
+    const r=await command('gifframe/'+i,g.frames[i],m=>m.cmd==='gifframe'&&m.i===i);
+    have=r.have;
+  }
+  const e=await command('gifend',String(delay),m=>m.cmd==='gifend',3,20000);
+  return e.name+' ('+have+' of '+g.total+' frames, '+delay+' ms)';
+}
+
+$('pick').onclick=()=>$('f').click();
+$('f').onchange=async()=>{
+  const list=[...$('f').files];$('f').value='';if(!list.length)return;
+  $('pick').disabled=true;let okc=0;
+  for(let i=0;i<list.length;i++){
+    const file=list[i];
+    const prog=t=>{$('upmsg').textContent=file.name+': '+t;$('upbar').style.width=Math.round(100*i/list.length)+'%';};
+    prog('reading');
+    try{
+      const res=(file.type==='image/gif')?await sendGif(file,prog):await sendPhoto(file,prog);
+      note('Sent '+file.name+' \u2192 '+res,'good');okc++;
+    }catch(e){note('Failed '+file.name+': '+e.message,'bad');}
+  }
+  $('upbar').style.width='100%';$('upmsg').textContent=okc+' of '+list.length+' sent.';
+  $('pick').disabled=false;setTimeout(()=>{$('upbar').style.width='0'},1500);
+};
+
+$('send').onclick=async()=>{const t=$('t').value.trim();if(!t)return;
+  try{await command('message',$('c').value+' '+t,m=>m.cmd==='message');$('t').value='';note('Scrolling: '+t,'good');}catch(e){note(e.message,'bad');}};
+function slider(id,val,saved,sub){
+  let timer;
+  $(id).oninput=()=>{$(val).textContent=$(id).value;$(saved).textContent='';};
+  $(id).onchange=()=>{clearTimeout(timer);timer=setTimeout(async()=>{
+    try{await command(sub,$(id).value,m=>m.cmd===sub);$(saved).textContent='saved';setTimeout(()=>$(saved).textContent='',2000);}
+    catch(e){$(saved).textContent='failed';note(e.message,'bad');}},150);};
+}
+slider('b','bv','bs','brightness');
+slider('i','iv','is','interval');
+$('resume').onclick=async()=>{try{await command('slideshow','1',m=>m.cmd==='slideshow');note('Back to slideshow.');}catch(e){note(e.message,'bad');}};
+$('clearlog').onclick=()=>{$('log').innerHTML='';};
+$('connect').onclick=connect;
+$('pass').onkeydown=e=>{if(e.key==='Enter')connect();};
+
+loadCfg();
+if($('host').value&&$('user').value&&$('pass').value)connect();
+</script></body></html>
