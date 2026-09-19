@@ -31,6 +31,10 @@ label{font-size:14px;color:var(--muted)}
 .note{color:var(--muted);font-size:14px;margin:8px 0 0}
 #log{font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;max-height:220px;overflow:auto;white-space:pre-wrap;margin:0}
 #log .bad{color:#ff8c78}#log .good{color:var(--green)}
+.items{list-style:none;padding:0;margin:0}.items li{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 6px;border-bottom:1px solid var(--line);font-size:14px}
+.items li.now{background:#3d3420;border-radius:8px}.items .m{color:var(--muted);font-size:13px}.items button{min-height:34px;padding:6px 10px;font-size:13px}
+input[type=radio]{width:20px;height:20px;accent-color:var(--amber);margin:0 6px 0 0;vertical-align:middle}
+.row label{color:var(--ink);cursor:pointer;padding:6px 10px 6px 0}
 .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--red);margin-right:6px;vertical-align:middle}
 .dot.on{background:var(--green)}
 </style></head><body><main>
@@ -49,22 +53,28 @@ label{font-size:14px;color:var(--muted)}
 </section>
 
 <section>
+<h2>When to show what you send</h2>
+<div class="row"><label><input type="radio" name="when" value="next" checked> After the current picture finishes</label><label><input type="radio" name="when" value="now"> Right away</label></div>
+<p class="note" id="whennote">Applies to messages, photos and GIFs. "Right away" interrupts whatever is on the frame.</p>
+</section>
+
+<section>
 <h2>Send a message</h2>
 <div class="row"><input type="text" id="t" maxlength="120" placeholder="Happy birthday!"><input type="color" id="c" value="#f0a830"><button class="quiet" id="send">Scroll it</button></div>
 </section>
 
 <section>
 <h2>Add photos or GIFs</h2>
+<div class="row" style="margin-bottom:10px"><label for="dw">Each stays on the frame for</label><input type="number" id="dw" min="0" max="3600" placeholder="default" style="width:96px"><span class="note" id="dwnote" style="margin:0">seconds per turn (blank = the frame's own setting)</span></div>
 <div class="row"><button id="pick">Choose files</button><span class="note" id="upmsg" style="margin:0">Resized to 64&times;64 here before sending.</span></div>
 <input type="file" id="f" accept="image/*" multiple>
 <div class="bar"><i id="upbar"></i></div>
 </section>
 
 <section>
-<h2>Frame</h2>
-<div class="set"><label>Brightness <b id="bv">60</b>%</label><span class="saved" id="bs"></span><input type="range" id="b" min="5" max="100" value="60"></div>
-<div class="set"><label>Slideshow: each item stays for <b id="iv">20</b> s</label><span class="saved" id="is"></span><input type="range" id="i" min="2" max="300" value="20"></div>
-<div class="row"><button class="quiet" id="resume">Back to slideshow</button></div>
+<h2>Your pictures on the frame <span id="count"></span></h2>
+<ul class="items" id="mine"></ul>
+<p class="note" id="minenote">Only what you sent is listed here; the owner's pictures stay private. New pictures join the slideshow as the next one shown and light a small dot on the panel &mdash; nothing interrupts what's on screen.</p>
 </section>
 
 <section>
@@ -76,7 +86,7 @@ label{font-size:14px;color:var(--muted)}
 <script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
-let MAXF=24, client=null, base='', waiters=[];
+let MAXF=24, CAP=120, DEF=20, client=null, base='', waiters=[], MINE=[], SHOWING='';
 
 function note(t,cls){const e=$('log');const d=document.createElement('div');if(cls)d.className=cls;
   d.textContent=new Date().toLocaleTimeString()+'  '+t;e.append(d);while(e.children.length>80)e.firstChild.remove();e.scrollTop=e.scrollHeight;}
@@ -101,11 +111,12 @@ function connect(){
   client=mqtt.connect(url,{username:user,password:pass,clean:true,connectTimeout:10000,reconnectPeriod:5000,keepalive:30});
   client.on('connect',()=>{
     note('Connected to broker.','good');setStatus('broker connected, waiting for the frame\u2026',false);
-    client.subscribe([base+'status',base+'ack'],{qos:1},err=>{if(err)note('Subscribe failed: '+err.message,'bad');});
+    client.subscribe([base+'status',base+'items',base+'ack'],{qos:1},err=>{if(err)note('Subscribe failed: '+err.message,'bad');});
   });
   client.on('message',(topic,payload)=>{
     let m;try{m=JSON.parse(payload.toString());}catch(e){return;}
     if(topic===base+'status')onStatus(m);
+    else if(topic===base+'items')onItems(m);
     else if(topic===base+'ack'){
       for(const w of [...waiters]) if(w.pred(m)){waiters.splice(waiters.indexOf(w),1);w.resolve(m);}
       if(m.ok===false)note('Frame reports: '+(m.cmd||'')+' \u2014 '+m.err,'bad');
@@ -117,11 +128,34 @@ function connect(){
 }
 function onStatus(s){
   if(!s.online){setStatus('broker connected \u2014 <b>frame is offline</b>',false);return;}
-  setStatus('<b>frame online</b> \u00b7 '+s.storage+' \u00b7 '+s.freeMB+' MB free \u00b7 '+s.count+' items \u00b7 GIFs up to '+s.maxframes+' frames'+(s.pinned?' \u00b7 holding '+s.pinned:''),true);
-  MAXF=s.maxframes||MAXF;
-  if(document.activeElement!==$('b')){$('b').value=s.brightness;$('bv').textContent=s.brightness;}
-  if(document.activeElement!==$('i')){$('i').value=s.interval;$('iv').textContent=s.interval;}
+  const mineNow=MINE.some(it=>it[0]===s.showing);
+  setStatus('<b>frame online</b> \u00b7 '+s.freeMB+' MB free \u00b7 '+s.remote+' of your pictures on it \u00b7 GIFs up to '+s.maxframes+' frames'+(mineNow?' \u00b7 <b>showing yours now</b>':'')+(s.pendingMsg?' \u00b7 your message plays next':''),true);
+  MAXF=s.maxframes||MAXF;CAP=s.cap||CAP;DEF=s.interval||DEF;SHOWING=s.showing||'';
+  $('dw').max=CAP;$('dwnote').textContent='seconds per turn, up to '+CAP+' (blank = the frame\'s setting, '+DEF+' s)';
+  $('send').disabled=s.messages===false;if(s.messages===false)$('t').placeholder='The owner has turned remote messages off';
+  const nowOpt=document.querySelector('input[name=when][value=now]');
+  if(s.interrupt===false){nowOpt.disabled=true;if(nowOpt.checked)document.querySelector('input[name=when][value=next]').checked=true;$('whennote').textContent='The owner has turned "right away" off: everything you send waits for the current picture to finish.';}
+  else{nowOpt.disabled=false;$('whennote').textContent='Applies to messages, photos and GIFs. "Right away" interrupts whatever is on the frame.';}
+  renderMine();
   if(s.lastError)note('Frame reports: '+s.lastError,'bad');
+}
+function ago(t){if(!t)return '';const d=Math.floor(Date.now()/1000)-t;if(d<90)return 'just now';if(d<5400)return Math.round(d/60)+' min ago';if(d<172800)return Math.round(d/3600)+' h ago';return Math.round(d/86400)+' days ago';}
+function onItems(m){MINE=m.items||[];CAP=m.cap||CAP;DEF=m.default||DEF;$('count').textContent='('+(m.count||0)+')';renderMine();}
+function renderMine(){
+  const ul=$('mine');ul.innerHTML='';
+  if(!MINE.length){ul.innerHTML='<li class="m">Nothing from you yet.</li>';return;}
+  for(const [name,frames,dwell,added] of [...MINE].reverse()){
+    const li=document.createElement('li');if(name===SHOWING)li.className='now';
+    li.innerHTML='<span>'+(frames?'GIF \u00b7 '+frames+' frames':'Photo')+' <span class="m">'+ago(added)+(name===SHOWING?' \u00b7 on the frame now':'')+'</span></span>';
+    const right=document.createElement('span');right.className='row';
+    const dw=document.createElement('button');dw.className='quiet';dw.textContent=(dwell?dwell+' s':DEF+' s (default)');dw.title='Change how long it stays up';
+    dw.onclick=async()=>{const v=prompt('Seconds this picture stays up each turn (2\u2013'+CAP+', blank = default '+DEF+' s):',dwell||'');if(v===null)return;
+      try{await command('dwell',name+' '+(v.trim()||'0'),m=>m.cmd==='dwell');note('Updated timing for your picture.','good');}catch(e){note(e.message,'bad');}};
+    const x=document.createElement('button');x.style.background='var(--red)';x.style.color='#fff';x.textContent='Delete';
+    x.onclick=async()=>{if(!confirm('Remove this picture from the frame?'))return;
+      try{await command('delete',name,m=>m.cmd==='delete'&&m.name===name);note('Removed.','good');}catch(e){note(e.message,'bad');}};
+    right.append(dw,x);li.append(right);ul.append(li);
+  }
 }
 function publish(sub,payload){
   return new Promise((res,rej)=>{
@@ -271,8 +305,8 @@ async function sendPhoto(file,prog){
   const cv=document.createElement('canvas');cv.width=64;cv.height=64;const ctx=cv.getContext('2d');
   squareDraw(ctx,bmp,bmp.width,bmp.height);bmp.close();
   prog('sending');
-  const r=await command('photo',toRGB565(ctx),m=>m.cmd==='photo');
-  return r.name;
+  const r=await command('photo/'+dwellArg()+(nowArg()?'/now':''),toRGB565(ctx),m=>m.cmd==='photo');
+  return r.name+(r.queued?' (owner has "right away" off, so it queued)':'');
 }
 async function sendGif(file,prog){
   const buf=await file.arrayBuffer();
@@ -291,10 +325,12 @@ async function sendGif(file,prog){
     const r=await command('gifframe/'+i,g.frames[i],m=>m.cmd==='gifframe'&&m.i===i);
     have=r.have;
   }
-  const e=await command('gifend',String(delay),m=>m.cmd==='gifend',3,20000);
-  return e.name+' ('+have+' of '+g.total+' frames, '+delay+' ms)';
+  const e=await command('gifend',delay+' '+dwellArg()+' '+(nowArg()?'1':'0'),m=>m.cmd==='gifend',3,20000);
+  return e.name+' ('+have+' of '+g.total+' frames, '+delay+' ms)'+(e.queued?' (owner has "right away" off, so it queued)':'');
 }
 
+function nowArg(){const r=document.querySelector('input[name=when]:checked');return r&&r.value==='now'&&!r.disabled;}
+function dwellArg(){const v=parseInt($('dw').value,10);if(!v||v<0)return '0';return String(Math.min(Math.max(v,2),CAP));}
 $('pick').onclick=()=>$('f').click();
 $('f').onchange=async()=>{
   const list=[...$('f').files];$('f').value='';if(!list.length)return;
@@ -313,21 +349,13 @@ $('f').onchange=async()=>{
 };
 
 $('send').onclick=async()=>{const t=$('t').value.trim();if(!t)return;
-  try{await command('message',$('c').value+' '+t,m=>m.cmd==='message');$('t').value='';note('Scrolling: '+t,'good');}catch(e){note(e.message,'bad');}};
-function slider(id,val,saved,sub){
-  let timer;
-  $(id).oninput=()=>{$(val).textContent=$(id).value;$(saved).textContent='';};
-  $(id).onchange=()=>{clearTimeout(timer);timer=setTimeout(async()=>{
-    try{await command(sub,$(id).value,m=>m.cmd===sub);$(saved).textContent='saved';setTimeout(()=>$(saved).textContent='',2000);}
-    catch(e){$(saved).textContent='failed';note(e.message,'bad');}},150);};
-}
-slider('b','bv','bs','brightness');
-slider('i','iv','is','interval');
-$('resume').onclick=async()=>{try{await command('slideshow','1',m=>m.cmd==='slideshow');note('Back to slideshow.');}catch(e){note(e.message,'bad');}};
+  try{const r=await command('message'+(nowArg()?'/now':''),$('c').value+' '+t,m=>m.cmd==='message');$('t').value='';note((r.now?'Scrolling now: ':'Sent. It plays at the next slide change: ')+t,'good');}catch(e){note(e.message,'bad');}};
 $('clearlog').onclick=()=>{$('log').innerHTML='';};
 $('connect').onclick=connect;
 $('pass').onkeydown=e=>{if(e.key==='Enter')connect();};
 
 loadCfg();
+try{const w=localStorage.getItem('pf_when');if(w){const r=document.querySelector('input[name=when][value='+w+']');if(r)r.checked=true;}}catch(e){}
+for(const r of document.querySelectorAll('input[name=when]'))r.onchange=()=>{try{localStorage.setItem('pf_when',r.value);}catch(e){}};
 if($('host').value&&$('user').value&&$('pass').value)connect();
 </script></body></html>
