@@ -86,7 +86,7 @@ input[type=radio]{width:20px;height:20px;accent-color:var(--amber);margin:0 6px 
 <script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
-let MAXF=24, CAP=120, DEF=20, client=null, base='', waiters=[], MINE=[], SHOWING='';
+let MAXF=24, CAP=120, DEF=20, client=null, base='', waiters=[], MINE=[], SHOWING='', LASTERR='';
 
 function note(t,cls){const e=$('log');const d=document.createElement('div');if(cls)d.className=cls;
   d.textContent=new Date().toLocaleTimeString()+'  '+t;e.append(d);while(e.children.length>80)e.firstChild.remove();e.scrollTop=e.scrollHeight;}
@@ -137,7 +137,8 @@ function onStatus(s){
   if(s.interrupt===false){nowOpt.disabled=true;if(nowOpt.checked)document.querySelector('input[name=when][value=next]').checked=true;$('whennote').textContent='The owner has turned "right away" off: everything you send waits for the current picture to finish.';}
   else{nowOpt.disabled=false;$('whennote').textContent='Applies to messages, photos and GIFs. "Right away" interrupts whatever is on the frame.';}
   renderMine();
-  if(s.lastError)note('Frame reports: '+s.lastError,'bad');
+  if(s.lastError&&s.lastError!==LASTERR){LASTERR=s.lastError;note('Frame reports: '+s.lastError,'bad');}
+  if(!s.lastError)LASTERR='';
 }
 function ago(t){if(!t)return '';const d=Math.floor(Date.now()/1000)-t;if(d<90)return 'just now';if(d<5400)return Math.round(d/60)+' min ago';if(d<172800)return Math.round(d/3600)+' h ago';return Math.round(d/86400)+' days ago';}
 function onItems(m){MINE=m.items||[];CAP=m.cap||CAP;DEF=m.default||DEF;$('count').textContent='('+(m.count||0)+')';renderMine();}
